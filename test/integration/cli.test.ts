@@ -27,8 +27,7 @@ describe("CLI Integration", () => {
    * Verifies that 'portlens my-app echo hello' correctly sets the domain
    * and executes the trailing command.
    */
-  it("should accept a custom name and execute a wrapper command", () => {
-    // We use 'echo' because it's a built-in command that finishes quickly
+it("should accept a custom name and execute a wrapper command", () => {
     const output = execSync(
       `node --no-warnings "${cliPath}" manual-test-app echo "ProcessStarted"`,
       {
@@ -39,8 +38,14 @@ describe("CLI Integration", () => {
 
     // Verify the domain was overridden
     expect(output).toContain("http://manual-test-app.localhost");
-    // Verify the custom command was identified
-    expect(output).toContain("Command:   echo ProcessStarted");
+    
+    /**
+     * @hack Whitespace Resilience
+     * Using a regex to look for "Command:" followed by any number of spaces 
+     * and then our expected command. This prevents spacing/padding failures.
+     */
+    expect(output).toMatch(/Command:\s+echo ProcessStarted/);
+    
     // Verify the spawned process actually ran
     expect(output).toContain("ProcessStarted");
   });
