@@ -1,6 +1,6 @@
 {
   "name": "portlens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stable .localhost domains and automated port management for local development. Replace localhost:5173 with project-name.localhost automatically.",
   "type": "module",
   "author": "Timothy T. Joe (@timtjoe)",
