@@ -12,6 +12,7 @@ import { ChildProcess } from "node:child_process";
 async function bootstrap() {
   const rawArgs = process.argv.slice(2);
 
+  // 1. Direct Doctor Access
   if (rawArgs.includes("doctor")) {
     await new PortlensDoctor().diagnose();
     process.exit(0);
@@ -22,15 +23,17 @@ async function bootstrap() {
   const os = OSFactory.create();
 
   const cleanup = async () => {
+    // @hack catch() prevents UAC cancellation from crashing the cleanup loop
     if (currentDomain) await os.unmapDomain(currentDomain).catch(() => {});
     if (child) child.kill();
-    process.exit();
+    process.exit(0);
   };
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
   try {
+    // 2. Argument Parsing
     const [firstArg, ...restArgs] = rawArgs;
     let manualName: string | undefined;
     let customCommand: string[] = [];
@@ -43,16 +46,17 @@ async function bootstrap() {
     const { name: configName, suffix } = await getProjectConfig();
     currentDomain = `${manualName || configName}${suffix}`;
 
+    // 3. Infrastructure Setup
     const port = await new SequentialPortStrategy().findAvailablePort(4000, 4999);
     await os.mapDomain(currentDomain);
     
     ProxyEngine.getInstance().start({ host: "127.0.0.1", port }, currentDomain);
 
+    // 4. Command Determination
     let executable: string;
     let args: string[];
 
     if (customCommand.length > 0) {
-      // @hack Non-null assertion (!) is safe here because customCommand.length > 0
       executable = customCommand[0]!; 
       args = customCommand.slice(1);
     } else {
@@ -68,6 +72,7 @@ ${chalk.green("✔")} Internal: ${chalk.gray(`localhost:${port}`)}
 ${chalk.green("✔")} Command:  ${chalk.yellow([executable, ...args].join(" "))}
     `);
 
+    // 5. Execution
     child = ProcessRunner.execute(executable, args, port);
 
     child.on("exit", (code) => {

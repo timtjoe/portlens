@@ -7,5 +7,9 @@ export default defineConfig({
   clean: true,
   minify: true,
   target: 'node20',
-  shims: true, // Injects __dirname/ __filename for ESM
+  shims: true, 
+  // @important Force shebang for CLI execution
+  banner: {
+    js: '#!/usr/bin/env node',
+  },
 });

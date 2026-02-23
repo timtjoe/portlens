@@ -1,7 +1,7 @@
 {
   "name": "portlens",
   "version": "0.1.0",
-  "description": "Stable .localhost URLs for local development. Map project folders to clean URLs automatically.",
+  "description": "Stable .localhost domains and automated port management for local development. Replace localhost:5173 with project-name.localhost automatically.",
   "type": "module",
   "author": "Timothy T. Joe (@timtjoe)",
   "license": "Apache-2.0",
