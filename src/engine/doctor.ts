@@ -1,9 +1,11 @@
 /**
  * @fileoverview Doctor Engine.
- * Performs diagnostics to ensure the local environment is capable of running Portlens.
+ * Performs diagnostics and provides automatic repairs for port conflicts.
  */
 import { createServer } from 'node:net';
 import { access, constants } from 'node:fs/promises';
+import { execSync } from 'node:child_process';
+import readline from 'node:readline/promises';
 import chalk from 'chalk';
 import { OSFactory } from '../strategies/os';
 import { isElevated } from '../utils/sudo';
@@ -12,19 +14,46 @@ export class PortlensDoctor {
   async diagnose() {
     console.log(chalk.bold('\n🩺 Portlens Diagnostic Report\n'));
 
-    const checks = [
-      this.checkPrivileges(),
-      this.checkPort80(),
-      this.checkHostsAccess(),
-    ];
+    // 1. Run core diagnostics
+    const privileges = await this.checkPrivileges();
+    const port80 = await this.checkPort80();
+    const hosts = await this.checkHostsAccess();
 
-    const results = await Promise.all(checks);
-    const hasFailures = results.some(r => r === false);
+    const results = [privileges, port80, hosts];
+    const hasFailures = results.some((r) => r === false);
+
+    // 2. Offer Repair if only Port 80 is the blocker
+    if (!port80 && privileges && hosts) {
+      await this.offerPortRepair();
+    }
 
     if (hasFailures) {
       console.log(chalk.red.bold('\n✖ Some checks failed. Please resolve them to use Portlens.'));
     } else {
       console.log(chalk.green.bold('\n✔ All systems go! Your environment is ready.'));
+    }
+  }
+
+  /**
+   * @hack Interactive repair using native readline to avoid external prompt dependencies.
+   */
+  private async offerPortRepair() {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    console.log(chalk.cyan('\n🔧 Auto-Repair Available'));
+    const answer = await rl.question(chalk.white('   Would you like Portlens to attempt to free Port 80? (y/n): '));
+    rl.close();
+
+    if (answer.toLowerCase() === 'y') {
+      try {
+        this.killProcessOnPort(80);
+        console.log(chalk.green('   ✔ Port 80 has been cleared.'));
+      } catch (err) {
+        console.log(chalk.red('   ✖ Failed to clear port. You may need to close the app manually.'));
+      }
     }
   }
 
@@ -35,19 +64,75 @@ export class PortlensDoctor {
   }
 
   private async checkPort80() {
+    const port = 80;
     const isAvailable = await new Promise((resolve) => {
       const s = createServer();
       s.once('error', () => resolve(false));
       s.once('listening', () => s.close(() => resolve(true)));
-      s.listen(80);
+      s.listen(port);
     });
-    this.report('Port 80 Availability', isAvailable as boolean, 'Port 80 is occupied. Stop Apache/Nginx/IIS.');
-    return isAvailable;
+
+    let hint = 'Port 80 is occupied. Stop Apache/Nginx/IIS.';
+
+    if (!isAvailable) {
+      try {
+        const occupier = this.getProcessOnPort(port);
+        if (occupier) {
+          hint = `Port 80 is occupied by "${occupier}".`;
+        }
+      } catch {
+        /* fallback to default hint */
+      }
+    }
+
+    this.report('Port 80 Availability', isAvailable as boolean, hint);
+    return isAvailable as boolean;
+  }
+
+  /**
+   * @hack Internal helper to identify port squatters using native OS commands.
+   */
+  private getProcessOnPort(port: number): string | null {
+    try {
+      if (process.platform === 'win32') {
+        const pidCmd = `netstat -ano | findstr :${port} | findstr LISTENING`;
+        const output = execSync(pidCmd, { encoding: 'utf8' }).trim();
+        const pid = output.split(/\s+/).pop();
+        if (pid) {
+          return execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8' })
+            .split(/\s+/)[1] || `PID ${pid}`;
+        }
+      } else {
+        const cmd = `lsof -i :${port} -sTCP:LISTEN -t`;
+        const pid = execSync(cmd, { encoding: 'utf8' }).trim();
+        if (pid) {
+          return execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8' }).trim();
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * @hack Aggressively terminates the process holding a specific port.
+   */
+  private killProcessOnPort(port: number) {
+    if (process.platform === 'win32') {
+      const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8' });
+      const pid = output.trim().split(/\s+/).pop();
+      if (pid) execSync(`taskkill /F /PID ${pid}`);
+    } else {
+      const pid = execSync(`lsof -i :${port} -sTCP:LISTEN -t`, { encoding: 'utf8' }).trim();
+      if (pid) execSync(`sudo kill -9 ${pid}`);
+    }
   }
 
   private async checkHostsAccess() {
     const os = OSFactory.create();
-    const path = (os as any).getHostsPath?.() || '/etc/hosts';
+    // @hack Use type casting to access protected hostsPath if available from OSStrategy
+    const path = (os as any).hostsPath || '/etc/hosts';
     try {
       await access(path, constants.R_OK | constants.W_OK);
       this.report('Hosts File Permissions', true);

@@ -1,19 +1,22 @@
 /**
  * @fileoverview Process Runner.
- * Spawns the development command (npm run dev) and injects the port.
+ * Manages the lifecycle of the development command.
  */
-import { spawn } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
 
-export function startDevServer(port: number, args: string[]) {
-  const fullArgs = ['run', 'dev', '--', ...args];
-  
-  const child = spawn('npm', fullArgs, {
-    stdio: 'inherit',
-    env: { ...process.env, PORT: port.toString() }
-  });
-
-  process.on('SIGINT', () => {
-    child.kill();
-    process.exit();
-  });
+export class ProcessRunner {
+  /**
+   * Spawns the dev server and handles path resolution.
+   * @hack 'shell: true' is critical for Windows to resolve .cmd/.ps1 binaries.
+   */
+  static execute(executable: string, args: string[], port: number): ChildProcess {
+    return spawn(executable, args, {
+      stdio: 'inherit',
+      env: { 
+        ...process.env, 
+        PORT: port.toString() 
+      },
+      shell: true,
+    });
+  }
 }

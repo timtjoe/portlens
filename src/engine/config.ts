@@ -14,8 +14,11 @@ export async function getProjectConfig(): Promise<{
   name: string;
   suffix: string;
 }> {
-  // 1. Strict Project Check
-  // We only consider it a "project" if it has a config file or a package.json
+  /**
+   * @important Strict Project Validation.
+   * To prevent Portlens from running in arbitrary directories (like System32),
+   * we mandate the presence of a project manifest.
+   */
   const hasConfig = existsSync("portlens.json") || existsSync("routes.json");
   const hasPkg = existsSync("package.json");
 
@@ -28,7 +31,10 @@ export async function getProjectConfig(): Promise<{
   let name: string | undefined;
   let suffix = ".localhost";
 
-  // 2. Check for portlens.json or routes.json (Highest Priority)
+  /**
+   * @important Configuration Priority.
+   * Explicit Portlens configs always override generic package.json names.
+   */
   const configFiles = ["portlens.json", "routes.json"];
   for (const file of configFiles) {
     if (existsSync(file)) {
@@ -39,7 +45,8 @@ export async function getProjectConfig(): Promise<{
         if (data.suffix) suffix = data.suffix;
         break;
       } catch (e) {
-        // Ignore malformed JSON
+        // @hack Silently ignore malformed JSON to prevent the CLI from crashing 
+        // during startup; we fall back to package.json or CWD instead.
       }
     }
   }
@@ -49,6 +56,11 @@ export async function getProjectConfig(): Promise<{
     try {
       const content = await readFile("package.json", "utf-8");
       const data = JSON.parse(content);
+      /**
+       * @hack Scoped Package Handling.
+       * If a package is named '@org/my-app', we extract just 'my-app' 
+       * to create a valid, readable local domain.
+       */
       name = data.name?.split("/").pop();
     } catch (e) {
       // Ignore

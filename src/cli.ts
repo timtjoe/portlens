@@ -5,8 +5,9 @@ import { OSFactory } from "./strategies/os";
 import { FrameworkFactory } from "./strategies/frameworks";
 import { ProxyEngine } from "./engine/proxy";
 import { getProjectConfig } from "./engine/config";
-import { spawn } from "node:child_process";
+import { ProcessRunner } from "./engine/runner";
 import { PortlensDoctor } from "./engine/doctor";
+import { ChildProcess } from "node:child_process";
 
 async function bootstrap() {
   const rawArgs = process.argv.slice(2);
@@ -16,12 +17,23 @@ async function bootstrap() {
     process.exit(0);
   }
 
+  let child: ChildProcess | null = null;
+  let currentDomain: string | null = null;
+  const os = OSFactory.create();
+
+  const cleanup = async () => {
+    if (currentDomain) await os.unmapDomain(currentDomain).catch(() => {});
+    if (child) child.kill();
+    process.exit();
+  };
+
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+
   try {
+    const [firstArg, ...restArgs] = rawArgs;
     let manualName: string | undefined;
     let customCommand: string[] = [];
-
-    // Destructure first element to satisfy strict null checks
-    const [firstArg, ...restArgs] = rawArgs;
 
     if (firstArg && !firstArg.startsWith("-")) {
       manualName = firstArg;
@@ -29,59 +41,45 @@ async function bootstrap() {
     }
 
     const { name: configName, suffix } = await getProjectConfig();
-    const domain = `${manualName || configName}${suffix}`;
+    currentDomain = `${manualName || configName}${suffix}`;
 
-    const port = await new SequentialPortStrategy().findAvailablePort(
-      4000,
-      4999,
-    );
+    const port = await new SequentialPortStrategy().findAvailablePort(4000, 4999);
+    await os.mapDomain(currentDomain);
+    
+    ProxyEngine.getInstance().start({ host: "127.0.0.1", port }, currentDomain);
 
-    const os = OSFactory.create();
-    await os.mapDomain(domain);
-
-    ProxyEngine.getInstance().start({ host: "127.0.0.1", port }, domain);
-
-    const framework = FrameworkFactory.create();
-    let commandToSpawn: string;
-    let commandArgs: string[];
+    let executable: string;
+    let args: string[];
 
     if (customCommand.length > 0) {
-      // HACK: We assume the first index of customCommand is the executable.
-      // Array destructuring here ensures TS knows commandToSpawn isn't undefined.
-      const [executable, ...args] = customCommand;
-      commandToSpawn = executable!;
-      commandArgs = args;
+      // @hack Non-null assertion (!) is safe here because customCommand.length > 0
+      executable = customCommand[0]!; 
+      args = customCommand.slice(1);
     } else {
-      commandToSpawn = "npm";
-      commandArgs = ["run", "dev", "--", ...framework.getArgs(port)];
+      const framework = FrameworkFactory.create();
+      executable = "npm";
+      args = ["run", "dev", "--", ...framework.getArgs(port)];
     }
 
     console.log(`
 ${chalk.cyan.bold("🔭 Portlens v1.1")}
-${chalk.green("✔")} Domain:   ${chalk.bold(`http://${domain}`)}
+${chalk.green("✔")} Domain:   ${chalk.bold(`http://${currentDomain}`)}
 ${chalk.green("✔")} Internal: ${chalk.gray(`localhost:${port}`)}
-${chalk.green("✔")} Command:  ${chalk.yellow([commandToSpawn, ...commandArgs].join(" "))}
+${chalk.green("✔")} Command:  ${chalk.yellow([executable, ...args].join(" "))}
     `);
 
-    const child = spawn(commandToSpawn, commandArgs, {
-      stdio: "inherit",
-      env: { ...process.env, PORT: port.toString() },
-      shell: true, // Required for Windows PATH resolution of 'npm' and 'bun'
-    });
-
-    process.on("SIGINT", () => {
-      child.kill();
-      process.exit(0);
-    });
+    child = ProcessRunner.execute(executable, args, port);
 
     child.on("exit", (code) => {
       if (code !== 0 && code !== null) {
         console.log(chalk.red(`\n✖ Process exited with code ${code}`));
       }
-      process.exit(code || 0);
+      cleanup();
     });
+
   } catch (err: any) {
     console.error(chalk.red(`\n✖ Fatal Error: ${err.message}`));
+    await cleanup();
     process.exit(1);
   }
 }
