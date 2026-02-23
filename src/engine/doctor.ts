@@ -14,7 +14,6 @@ export class PortlensDoctor {
   async diagnose() {
     console.log(chalk.bold('\n🩺 Portlens Diagnostic Report\n'));
 
-    // 1. Run core diagnostics
     const privileges = await this.checkPrivileges();
     const port80 = await this.checkPort80();
     const hosts = await this.checkHostsAccess();
@@ -22,7 +21,6 @@ export class PortlensDoctor {
     const results = [privileges, port80, hosts];
     const hasFailures = results.some((r) => r === false);
 
-    // 2. Offer Repair if only Port 80 is the blocker
     if (!port80 && privileges && hosts) {
       await this.offerPortRepair();
     }
@@ -44,15 +42,18 @@ export class PortlensDoctor {
     });
 
     console.log(chalk.cyan('\n🔧 Auto-Repair Available'));
-    const answer = await rl.question(chalk.white('   Would you like Portlens to attempt to free Port 80? (y/n): '));
+    const answer = await rl.question(chalk.white('    Would you like Portlens to attempt to free Port 80? (y/n): '));
     rl.close();
 
     if (answer.toLowerCase() === 'y') {
       try {
         this.killProcessOnPort(80);
-        console.log(chalk.green('   ✔ Port 80 has been cleared.'));
-      } catch (err) {
-        console.log(chalk.red('   ✖ Failed to clear port. You may need to close the app manually.'));
+        console.log(chalk.green('    ✔ Port 80 has been cleared.'));
+      } catch (err: any) {
+        console.log(chalk.red('    ✖ Failed to clear port automatically.'));
+        if (process.platform === 'win32') {
+            console.log(chalk.gray('    └─ Note: For System (PID 4), you may need to run "net stop http /y" manually.'));
+        }
       }
     }
   }
@@ -80,9 +81,7 @@ export class PortlensDoctor {
         if (occupier) {
           hint = `Port 80 is occupied by "${occupier}".`;
         }
-      } catch {
-        /* fallback to default hint */
-      }
+      } catch { /* fallback */ }
     }
 
     this.report('Port 80 Availability', isAvailable as boolean, hint);
@@ -91,6 +90,7 @@ export class PortlensDoctor {
 
   /**
    * @hack Internal helper to identify port squatters using native OS commands.
+   * Special logic added to detect Windows System (PID 4) services.
    */
   private getProcessOnPort(port: number): string | null {
     try {
@@ -98,6 +98,9 @@ export class PortlensDoctor {
         const pidCmd = `netstat -ano | findstr :${port} | findstr LISTENING`;
         const output = execSync(pidCmd, { encoding: 'utf8' }).trim();
         const pid = output.split(/\s+/).pop();
+        
+        if (pid === '4') return 'System (IIS/HTTP.sys)';
+        
         if (pid) {
           return execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8' })
             .split(/\s+/)[1] || `PID ${pid}`;
@@ -117,12 +120,21 @@ export class PortlensDoctor {
 
   /**
    * @hack Aggressively terminates the process holding a specific port.
+   * @important PID 4 on Windows cannot be killed via taskkill. We attempt to stop 
+   * the web publishing and http services instead.
    */
   private killProcessOnPort(port: number) {
     if (process.platform === 'win32') {
       const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8' });
       const pid = output.trim().split(/\s+/).pop();
-      if (pid) execSync(`taskkill /F /PID ${pid}`);
+      
+      if (pid === '4') {
+        // Attempt to stop the services that usually hold Port 80 on Windows
+        execSync('net stop w3svc /y', { stdio: 'ignore' });
+        execSync('net stop http /y', { stdio: 'ignore' });
+      } else if (pid) {
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      }
     } else {
       const pid = execSync(`lsof -i :${port} -sTCP:LISTEN -t`, { encoding: 'utf8' }).trim();
       if (pid) execSync(`sudo kill -9 ${pid}`);
@@ -131,7 +143,6 @@ export class PortlensDoctor {
 
   private async checkHostsAccess() {
     const os = OSFactory.create();
-    // @hack Use type casting to access protected hostsPath if available from OSStrategy
     const path = (os as any).hostsPath || '/etc/hosts';
     try {
       await access(path, constants.R_OK | constants.W_OK);
@@ -146,6 +157,6 @@ export class PortlensDoctor {
   private report(task: string, success: boolean, hint?: string) {
     const icon = success ? chalk.green('✔') : chalk.red('✖');
     console.log(`${icon} ${task}`);
-    if (!success && hint) console.log(chalk.gray(`   └─ Hint: ${hint}`));
+    if (!success && hint) console.log(chalk.gray(`    └─ Hint: ${hint}`));
   }
 }

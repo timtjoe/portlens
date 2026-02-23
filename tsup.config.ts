@@ -7,8 +7,8 @@ export default defineConfig({
   clean: true,
   minify: true,
   target: 'node20',
-  shims: true, 
-  // @important Force shebang for CLI execution
+  shims: true,
+  // @important Ensure the shebang is the VERY first line with no leading whitespace
   banner: {
     js: '#!/usr/bin/env node',
   },

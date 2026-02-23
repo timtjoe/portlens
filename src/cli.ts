@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import chalk from "chalk";
 import { SequentialPortStrategy } from "./strategies/ports";
 import { OSFactory } from "./strategies/os";
