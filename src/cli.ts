@@ -1,76 +1,85 @@
-/**
- * @fileoverview Portlens CLI Orchestrator.
- * Standardizes the sequence of operations for a stable dev environment.
- */
-import chalk from 'chalk';
-import { SequentialPortStrategy } from './strategies/ports';
-import { OSFactory } from './strategies/os';
-import { FrameworkFactory } from './strategies/frameworks';
-import { ProxyEngine } from './engine/proxy';
-import { getProjectConfig } from './engine/config';
-import { spawn } from 'node:child_process';
-import { PortlensDoctor } from './engine/doctor';
+#!/usr/bin/env node
+import chalk from "chalk";
+import { SequentialPortStrategy } from "./strategies/ports";
+import { OSFactory } from "./strategies/os";
+import { FrameworkFactory } from "./strategies/frameworks";
+import { ProxyEngine } from "./engine/proxy";
+import { getProjectConfig } from "./engine/config";
+import { spawn } from "node:child_process";
+import { PortlensDoctor } from "./engine/doctor";
 
 async function bootstrap() {
-  // Check for "doctor" command
-  if (process.argv.includes('doctor')) {
-    const doctor = new PortlensDoctor();
-    await doctor.diagnose();
+  const rawArgs = process.argv.slice(2);
+
+  if (rawArgs.includes("doctor")) {
+    await new PortlensDoctor().diagnose();
     process.exit(0);
   }
-  try {
-    // 1. Load configuration and determine domain
-    const { name, suffix } = await getProjectConfig();
-    const domain = `${name}${suffix}`;
-    
-    // 2. Identify a free internal port (Strategy Pattern)
-    const portFinder = new SequentialPortStrategy();
-    const port = await portFinder.findAvailablePort(4000, 4999);
 
-    // 3. Map OS Domain (OS Strategy)
+  try {
+    let manualName: string | undefined;
+    let customCommand: string[] = [];
+
+    // Destructure first element to satisfy strict null checks
+    const [firstArg, ...restArgs] = rawArgs;
+
+    if (firstArg && !firstArg.startsWith("-")) {
+      manualName = firstArg;
+      customCommand = restArgs;
+    }
+
+    const { name: configName, suffix } = await getProjectConfig();
+    const domain = `${manualName || configName}${suffix}`;
+
+    const port = await new SequentialPortStrategy().findAvailablePort(
+      4000,
+      4999,
+    );
+
     const os = OSFactory.create();
     await os.mapDomain(domain);
 
-    // 4. Start Proxy Engine (Singleton)
-    const proxy = ProxyEngine.getInstance();
-    proxy.start({ host: '127.0.0.1', port }, domain);
+    ProxyEngine.getInstance().start({ host: "127.0.0.1", port }, domain);
 
-    // 5. Inject Framework-specific flags (Framework Strategy)
     const framework = FrameworkFactory.create();
-    const flags = framework.getArgs(port);
+    let commandToSpawn: string;
+    let commandArgs: string[];
+
+    if (customCommand.length > 0) {
+      // HACK: We assume the first index of customCommand is the executable.
+      // Array destructuring here ensures TS knows commandToSpawn isn't undefined.
+      const [executable, ...args] = customCommand;
+      commandToSpawn = executable!;
+      commandArgs = args;
+    } else {
+      commandToSpawn = "npm";
+      commandArgs = ["run", "dev", "--", ...framework.getArgs(port)];
+    }
 
     console.log(`
-${chalk.cyan.bold('🔭 Portlens v1.0')}
-${chalk.green('✔')} Domain:   ${chalk.bold(`http://${domain}`)}
-${chalk.green('✔')} Internal: ${chalk.gray(`localhost:${port}`)}
-${chalk.green('✔')} Strategy: ${chalk.yellow(framework.id)}
+${chalk.cyan.bold("🔭 Portlens v1.1")}
+${chalk.green("✔")} Domain:   ${chalk.bold(`http://${domain}`)}
+${chalk.green("✔")} Internal: ${chalk.gray(`localhost:${port}`)}
+${chalk.green("✔")} Command:  ${chalk.yellow([commandToSpawn, ...commandArgs].join(" "))}
     `);
 
-    /**
-     * @important
-     * We spawn the child process with 'shell: true' to ensure that PATH 
-     * resolution for 'npm' works correctly across Windows and Unix.
-     */
-    const child = spawn('npm', ['run', 'dev', '--', ...flags], {
-      stdio: 'inherit',
+    const child = spawn(commandToSpawn, commandArgs, {
+      stdio: "inherit",
       env: { ...process.env, PORT: port.toString() },
-      shell: true 
+      shell: true, // Required for Windows PATH resolution of 'npm' and 'bun'
     });
 
-    // Cleanup on exit
-    process.on('SIGINT', () => {
+    process.on("SIGINT", () => {
       child.kill();
       process.exit(0);
     });
 
-    // Handle unexpected child exit
-    child.on('exit', (code) => {
-      if (code !== 0) {
-        console.log(chalk.red(`\n✖ Dev server exited with code ${code}`));
+    child.on("exit", (code) => {
+      if (code !== 0 && code !== null) {
+        console.log(chalk.red(`\n✖ Process exited with code ${code}`));
       }
       process.exit(code || 0);
     });
-
   } catch (err: any) {
     console.error(chalk.red(`\n✖ Fatal Error: ${err.message}`));
     process.exit(1);
